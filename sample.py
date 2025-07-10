@@ -16,8 +16,7 @@ from diffusers.models import AutoencoderKL
 from pretrained_models.download import find_model
 from models import DiT_models
 import argparse
-
-import torch.profiler
+import time
 
 def main(args):
     # Setup PyTorch:
@@ -46,28 +45,35 @@ def main(args):
 
     # Labels to condition the model with (feel free to change):
     class_labels = [207, 360, 387, 974, 88, 979, 417, 279]
+    time_total = []
+    
+    for i in range(8):
+        print("Starting sampling iteration", i + 1)
+        start_time = time.time()
+        # Create sampling noise:
+        n = len(class_labels)
+        z = torch.randn(n, 4, latent_size, latent_size, device=device)
+        y = torch.tensor(class_labels, device=device)
 
-    # Create sampling noise:
-    n = len(class_labels)
-    z = torch.randn(n, 4, latent_size, latent_size, device=device)
-    y = torch.tensor(class_labels, device=device)
+        # Setup classifier-free guidance:
+        z = torch.cat([z, z], 0)
+        y_null = torch.tensor([1000] * n, device=device)
+        y = torch.cat([y, y_null], 0)
+        model_kwargs = dict(y=y, cfg_scale=args.cfg_scale)
 
-    # Setup classifier-free guidance:
-    z = torch.cat([z, z], 0)
-    y_null = torch.tensor([1000] * n, device=device)
-    y = torch.cat([y, y_null], 0)
-    model_kwargs = dict(y=y, cfg_scale=args.cfg_scale)
+        # Sample images:
+        samples = diffusion.p_sample_loop(
+            model.forward_with_cfg, z.shape, z, clip_denoised=False, model_kwargs=model_kwargs, progress=True, device=device
+        )
+        samples, _ = samples.chunk(2, dim=0)  # Remove null class samples
+        samples = vae.decode(samples / 0.18215).sample
+        end_time = time.time()
 
-    # Sample images:
-    samples = diffusion.p_sample_loop(
-        model.forward_with_cfg, z.shape, z, clip_denoised=False, model_kwargs=model_kwargs, progress=True, device=device
-    )
-    samples, _ = samples.chunk(2, dim=0)  # Remove null class samples
-    samples = vae.decode(samples / 0.18215).sample
-
-    # Save and display images:
-    save_image(samples, "sample.png", nrow=4, normalize=True, value_range=(-1, 1))
-
+        # Save and display images:
+        save_image(samples, f"output/sample_{i}.png", nrow=4, normalize=True, value_range=(-1, 1))
+        time_total.append(end_time - start_time)
+    
+    print(f"Average sampling time: {sum(time_total) / len(time_total):.4f} seconds.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
